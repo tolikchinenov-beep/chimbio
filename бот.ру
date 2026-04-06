@@ -1,223 +1,243 @@
-import vk_api
-from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
-from vk_api.utils import get_random_id
-from vk_api.keyboard import VkKeyboard, VkKeyboardColor
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import asyncio
 import json
-import requests
+import uuid
 from datetime import datetime
-import logging
+from typing import Dict, Optional
+import aiohttp
 
-# ===== НАСТРОЙКИ =====
+from vkbottle import Bot, Message
+from vkbottle.bot import Blueprint
+from vkbottle import Keyboard, KeyboardButtonColor, Text, OpenLink
+
+# Токен и ID группы
 TOKEN = "vk1.a.IKjZjBmZ81PbetOXdFOCkPCT2C9lAtZ6zA7Ddfm02Q3ftEQxVtUKe_3-jW2v0vEQGPiE4LhTZk6Og7Cntib9pfyyR-rQRszDIAwmsYkBr4eKhvAl6KQy8J05QENmE1oKaeCKjPowGtlgnLBFyUbUU6TZwaiEG9liRA-1jiwcGv2v4KX4w9G_ttJ1nvLaQW1w297zMv5SmOx7flXxMxD87Q"
-GROUP_ID = 229452905  
+GROUP_ID = 22945290
 
-# Google Sheets настройки
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1fHP0PLouqRv9A9yVfJsxKYTobGJ3bdJS52rpSqU4V_k/edit?usp=sharing"
-SHEET_NAME = "Статистика"  # Название листа в гугл таблице
+# Данные ЮКассы
+YKASSA_SHOP_ID = "1004392"
+YKASSA_SECRET_KEY = "live_sWFe6UWGV8GuzaHsPHzKlkdw6rAoKvPVbg3M20QE2lk"
 
-# Данные для доступа к Google Sheets API
-# Вам нужно создать сервисный аккаунт в Google Cloud и скачать JSON файл
-# Пока используем упрощенный вариант без авторизации
+# Данные учеников
+class Student:
+    def __init__(self, code: str, name: str, curator: str, teacher: str, grade: str = "", subject: str = ""):
+        self.code = code.lower()
+        self.name = name
+        self.curator = curator
+        self.teacher = teacher
+        self.grade = grade
+        self.subject = subject
 
-# Хранилище кодов доступа и пользователей
-# Ключ: код доступа, Значение: {user_id, name, subjects, tariff, curator}
-ACCESS_CODES = {
-    "Н1": {
-        "name": "Нелли",
-        "subjects": ["ОГЭ БИОЛОГИЯ", "ХИМИЯ"],
-        "tariff": "Индивидуальный",
-        "curator": "Аня М."
-    }
-    # Добавляйте другие коды по аналогии:
-    # "Н2": {"name": "Имя", "subjects": ["Предмет1"], "tariff": "Тариф", "curator": "Куратор"}
+# База данных учеников
+STUDENTS: Dict[str, Student] = {
+    "н1": Student(
+        code="Н1",
+        name="Нелли",
+        curator="Аня",
+        teacher="Толик",
+        grade="",
+        subject=""
+    )
 }
 
-# Хранилище привязанных пользователей (user_id -> код доступа)
-user_access = {}
+# Общая статистика
+STATS_LINK = "https://docs.google.com/spreadsheets/d/1fHP0PLouqRv9A9yVfJsxKYTobGJ3bdJS52rpSqU4V_k/edit?usp=sharing"
+PLATFORM_LINK = "https://didak.ru/lk/teacher/homeworks/"
 
-# ===== НАСТРОЙКА ЛОГИРОВАНИЯ =====
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+bot = Bot(token=TOKEN)
+bp = Blueprint()
 
-# ===== ИНИЦИАЛИЗАЦИЯ VK =====
-vk_session = vk_api.VkApi(token=TOKEN)
-longpoll = VkBotLongPoll(vk_session, GROUP_ID)
-vk = vk_session.get_api()
+WELCOME_MESSAGE = """🌟 Добро пожаловать в школу CHIMBIO!
 
-def send_message(user_id, text, keyboard=None):
-    """Отправка сообщения с клавиатурой"""
-    try:
-        params = {
-            'user_id': user_id,
-            'message': text,
-            'random_id': get_random_id()
+Мы рады приветствовать вас в нашей школе химии и биологии! 🧪🔬
+
+📌 Что вы можете сделать:
+• Отправьте ваш персональный код - получите доступ к личному кабинету
+• Напишите "Привет" - увидите это сообщение
+
+В личном кабинете вас ждут:
+📊 Статистика успеваемости
+💳 Оплата занятий
+📚 Ссылка на образовательную платформу
+👨‍🏫 Информация о преподавателе и кураторе"""
+
+async def create_payment_link(amount: float, description: str, user_id: int) -> str:
+    """Создание платежа в ЮKassa и получение ссылки для оплаты"""
+    idempotence_key = str(uuid.uuid4())
+    
+    payment_data = {
+        "amount": {
+            "value": f"{amount:.2f}",
+            "currency": "RUB"
+        },
+        "confirmation": {
+            "type": "redirect",
+            "return_url": "https://vk.com/im"
+        },
+        "capture": True,
+        "description": description,
+        "metadata": {
+            "user_id": str(user_id),
+            "student_code": "Н1"  # можно динамически определять
         }
-        if keyboard:
-            params['keyboard'] = keyboard.get_keyboard()
-        
-        vk.messages.send(**params)
-        logger.info(f"Сообщение отправлено {user_id}")
-    except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
-
-def create_main_keyboard():
-    """Создание главной клавиатуры личного кабинета"""
-    keyboard = VkKeyboard(one_time=False)
-    keyboard.add_button("📊 Моя статистика", color=VkKeyboardColor.PRIMARY)
-    keyboard.add_button("💰 Оплата", color=VkKeyboardColor.SECONDARY)
-    keyboard.add_line()
-    keyboard.add_button("🌐 Сайт", color=VkKeyboardColor.POSITIVE)
-    keyboard.add_button("❓ Помощь", color=VkKeyboardColor.DEFAULT)
-    return keyboard
-
-def get_statistics_from_sheets(user_name):
-    """
-    Получение статистики из Google Sheets
-    Упрощенная версия - читает публичную таблицу
-    Для полноценной работы нужно настроить Google Sheets API
-    """
-    try:
-        # Публичный доступ к таблице (если таблица открыта для чтения)
-        # Извлекаем ID из URL
-        sheet_id = "1fHP0PLouqRv9A9yVfJsxKYTobGJ3bdJS52rpSqU4V_k"
-        
-        # Формируем URL для экспорта в CSV
-        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
-        
-        response = requests.get(csv_url)
-        if response.status_code == 200:
-            # Парсим CSV (упрощенно)
-            lines = response.text.strip().split('\n')
-            if len(lines) > 1:
-                headers = lines[0].split(',')
-                for line in lines[1:]:
-                    data = line.split(',')
-                    if len(data) > 0 and user_name.lower() in data[0].lower():
-                        # Нашли строку с пользователем
-                        stats = f"""
-📊 *Статистика учащегося*
-
-👤 Ученик: {user_name}
-📈 Прогресс: {data[1] if len(data) > 1 else 'Нет данных'}
-✅ Выполнено: {data[2] if len(data) > 2 else 'Нет данных'}
-⏳ Осталось: {data[3] if len(data) > 3 else 'Нет данных'}
-📅 Последнее обновление: {datetime.now().strftime('%d.%m.%Y %H:%M')}
-"""
-                        return stats
-            return "📊 Статистика временно недоступна. Обратитесь к куратору."
-        else:
-            return "❌ Не удалось подключиться к таблице статистики."
-    except Exception as e:
-        logger.error(f"Ошибка получения статистики: {e}")
-        return "❌ Ошибка загрузки статистики. Попробуйте позже."
-
-def get_payment_info():
-    """Информация об оплате"""
-    return """
-💰 *Информация об оплате*
-
-Для оплаты обучения вы можете:
-1. Перейти по ссылке: https://didak.ru/payment
-2. Отсканировать QR-код в личном кабинете на сайте
-3. Связаться с куратором для получения реквизитов
-
-*Важно:* после оплаты пришлите чек куратору для подтверждения.
-
-Куратор: Аня М. (ответит в течение 15 минут)
-"""
-
-def show_personal_cabinet(user_id, access_code):
-    """Показать личный кабинет"""
-    data = ACCESS_CODES.get(access_code)
-    if not data:
-        return "❌ Ошибка: данные не найдены"
+    }
     
-    subjects_text = "\n".join([f"• {s}" for s in data["subjects"]])
+    auth = aiohttp.BasicAuth(YKASSA_SHOP_ID, YKASSA_SECRET_KEY)
     
-    cabinet_text = f"""
-🏫 *ЛИЧНЫЙ КАБИНЕТ УЧАЩЕГОСЯ*
-
-👤 Ученик: {data["name"]}
-
-📚 *Предметы:*
-{subjects_text}
-
-⭐ Тариф: {data["tariff"]}
-👩‍🏫 Куратор: {data["curator"]}
-
----
-*Выберите действие на клавиатуре ниже:*
-"""
-    send_message(user_id, cabinet_text, create_main_keyboard())
-
-# ===== ОСНОВНОЙ ЦИКЛ БОТА =====
-logger.info("🚀 Бот запущен и готов к работе!")
-
-for event in longpoll.listen():
-    if event.type == VkBotEventType.MESSAGE_NEW:
-        text = event.obj.message.get('text', '').strip()
-        user_id = event.obj.message.get('from_id')
-        
-        if not text or not user_id:
-            continue
-        
-        logger.info(f"📨 Получено сообщение от {user_id}: {text}")
-        
-        # 1. Проверка на код доступа
-        if text.upper() in ACCESS_CODES:
-            access_code = text.upper()
-            user_access[user_id] = access_code
-            show_personal_cabinet(user_id, access_code)
-            continue
-        
-        # 2. Обработка команд из личного кабинета
-        if user_id in user_access:
-            access_code = user_access[user_id]
-            
-            if text == "📊 Моя статистика" or text.lower() == "моя статистика":
-                data = ACCESS_CODES.get(access_code, {})
-                stats = get_statistics_from_sheets(data.get("name", ""))
-                send_message(user_id, stats, create_main_keyboard())
-            
-            elif text == "💰 Оплата" or text.lower() == "оплата":
-                send_message(user_id, get_payment_info(), create_main_keyboard())
-            
-            elif text == "🌐 Сайт" or text.lower() == "сайт":
-                send_message(user_id, "🔗 Перейдите на сайт по ссылке:\nhttps://didak.ru/lk/teacher/lessons/", create_main_keyboard())
-            
-            elif text == "❓ Помощь" or text.lower() == "помощь":
-                help_text = """
-❓ *Помощь*
-
-Доступные команды:
-• Моя статистика - показывает ваш прогресс
-• Оплата - информация об оплате
-• Сайт - ссылка на платформу
-
-*Коды доступа:*
-Н1 - Личный кабинет Нелли
-
-Если у вас возникли вопросы, напишите куратору: @anya_curator
-"""
-                send_message(user_id, help_text, create_main_keyboard())
-            
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.yookassa.ru/v3/payments",
+            json=payment_data,
+            auth=auth,
+            headers={"Idempotence-Key": idempotence_key}
+        ) as response:
+            if response.status == 200:
+                result = await response.json()
+                return result["confirmation"]["confirmation_url"]
             else:
-                # Если пользователь авторизован, но написал что-то другое
-                send_message(user_id, "Используйте кнопки меню для навигации. Если нужна помощь - нажмите ❓ Помощь", create_main_keyboard())
+                error_text = await response.text()
+                print(f"Ошибка создания платежа: {error_text}")
+                return None
+
+@bot.on.private_message(text="Привет")
+async def greeting(message: Message):
+    await message.answer(WELCOME_MESSAGE)
+
+@bot.on.private_message()
+async def handle_code(message: Message):
+    code = message.text.strip().lower()
+    
+    if code in STUDENTS:
+        student = STUDENTS[code]
         
-        else:
-            # 3. Приветствие для новых пользователей
-            welcome_text = """
-👋 *Добро пожаловать!*
+        keyboard = (
+            Keyboard(one_time=False, inline=False)
+            .add(OpenLink(STATS_LINK, "📊 Статистика"), color=KeyboardButtonColor.PRIMARY)
+            .add(OpenLink(PLATFORM_LINK, "📚 Платформа"), color=KeyboardButtonColor.PRIMARY)
+            .row()
+            .add(Text("💳 Оплатить занятия"), color=KeyboardButtonColor.POSITIVE)
+            .row()
+            .add(Text("ℹ️ Обо мне"), color=KeyboardButtonColor.SECONDARY)
+        )
+        
+        student_info = f"""🎓 **Личный кабинет CHIMBIO**
 
-Я бот учебного центра. Чтобы начать работу, введите ваш *код доступа*.
+👤 **Ученик:** {student.name}
+👨‍🏫 **Преподаватель:** {student.teacher}
+👩‍💼 **Куратор:** {student.curator}
 
-Коды выдаются куратором при подключении к обучению.
+━━━━━━━━━━━━━━━━━━━
+Выберите действие:"""
+        
+        await message.answer(student_info, keyboard=keyboard)
+    else:
+        await message.answer(
+            "❌ Код не найден.\n\n"
+            "Пожалуйста, проверьте правильность ввода кода или обратитесь к куратору.\n\n"
+            "Напишите 'Привет' для получения общей информации."
+        )
 
-*Формат кода:* Н1, Н2 и т.д.
+@bot.on.private_message(text="ℹ️ Обо мне")
+async def about_me(message: Message):
+    await message.answer(
+        "🔐 Пожалуйста, отправьте ваш персональный код,\n"
+        "чтобы я мог показать информацию о вас."
+    )
 
-Если у вас нет кода, обратитесь к куратору: Аня М.
-"""
-            send_message(user_id, welcome_text)
+@bot.on.private_message(text="💳 Оплатить занятия")
+async def show_payment_options(message: Message):
+    """Показать варианты оплаты"""
+    keyboard = (
+        Keyboard(one_time=False, inline=False)
+        .add(Text("8 занятий - 8 464 ₽"), color=KeyboardButtonColor.POSITIVE)
+        .add(Text("4 занятия - 4 416 ₽"), color=KeyboardButtonColor.POSITIVE)
+        .row()
+        .add(Text("1 занятие - 1 150 ₽"), color=KeyboardButtonColor.POSITIVE)
+        .row()
+        .add(Text("🔙 Назад"), color=KeyboardButtonColor.SECONDARY)
+    )
+    
+    await message.answer(
+        "💳 **Выберите количество занятий:**\n\n"
+        "После нажатия на кнопку вы перейдете на страницу оплаты.",
+        keyboard=keyboard
+    )
+
+@bot.on.private_message(text=["8 занятий - 8 464 ₽", "4 занятия - 4 416 ₽", "1 занятие - 1 150 ₽"])
+async def process_payment(message: Message):
+    """Обработка выбора тарифа и создание платежа"""
+    text = message.text
+    
+    # Определяем сумму и описание
+    if "8 занятий" in text:
+        amount = 8464
+        lessons = 8
+    elif "4 занятия" in text:
+        amount = 4416
+        lessons = 4
+    else:
+        amount = 1150
+        lessons = 1
+    
+    description = f"Оплата {lessons} занятий в школе CHIMBIO"
+    
+    # Отправляем уведомление о создании платежа
+    await message.answer("⏳ Создаю платеж, пожалуйста, подождите...")
+    
+    # Создаем платеж и получаем ссылку
+    payment_url = await create_payment_link(amount, description, message.from_id)
+    
+    if payment_url:
+        # Создаем клавиатуру со ссылкой на оплату
+        keyboard = (
+            Keyboard(one_time=False, inline=False)
+            .add(OpenLink(payment_url, "💳 Перейти к оплате"), color=KeyboardButtonColor.POSITIVE)
+            .row()
+            .add(Text("🔙 Назад к тарифам"), color=KeyboardButtonColor.SECONDARY)
+        )
+        
+        await message.answer(
+            f"✅ **Платеж создан!**\n\n"
+            f"📦 Тариф: {lessons} занятий\n"
+            f"💰 Сумма: {amount} ₽\n\n"
+            f"Нажмите на кнопку ниже, чтобы перейти к оплате.\n"
+            f"После оплаты занятия будут автоматически зачислены.",
+            keyboard=keyboard
+        )
+    else:
+        await message.answer(
+            "❌ Не удалось создать платеж.\n"
+            "Пожалуйста, попробуйте позже или обратитесь к куратору."
+        )
+
+@bot.on.private_message(text="🔙 Назад к тарифам")
+async def back_to_tariffs(message: Message):
+    """Возврат к выбору тарифов"""
+    await show_payment_options(message)
+
+@bot.on.private_message(text="🔙 Назад")
+async def back_to_main(message: Message):
+    """Возврат к личному кабинету"""
+    await message.answer(
+        "Вернитесь в личный кабинет, отправив ваш персональный код.\n\n"
+        "Или напишите 'Привет' для общей информации."
+    )
+
+# Функция для добавления нового ученика
+def add_student(code: str, name: str, curator: str, teacher: str, grade: str = "", subject: str = ""):
+    student = Student(code, name, curator, teacher, grade, subject)
+    STUDENTS[code.lower()] = student
+    print(f"✅ Добавлен ученик: {name} (код: {code})")
+
+# Запуск бота
+async def main():
+    print("🚀 Бот CHIMBIO запущен!")
+    print(f"📊 Всего учеников в базе: {len(STUDENTS)}")
+    print("👥 Список учеников:")
+    for student in STUDENTS.values():
+        print(f"   - {student.name} (код: {student.code})")
+    print("\n✨ Бот готов к работе!")
+    
+    await bot.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main()) 
