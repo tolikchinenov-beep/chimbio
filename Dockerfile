@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY бот.ру .
 
-CMD ["python", "бот.ру"]
+CMD ["python", "bot.ru"]
