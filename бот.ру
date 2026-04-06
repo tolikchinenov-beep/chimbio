@@ -1,243 +1,208 @@
 import asyncio
-import json
 import uuid
-from datetime import datetime
-from typing import Dict, Optional
 import aiohttp
-
-from vkbottle import Bot, Message
-from vkbottle.bot import Blueprint
+from vkbottle import Bot
+from vkbottle.bot import Message
 from vkbottle import Keyboard, KeyboardButtonColor, Text, OpenLink
 
-# Токен и ID группы
+# ===== НАСТРОЙКИ =====
 TOKEN = "vk1.a.IKjZjBmZ81PbetOXdFOCkPCT2C9lAtZ6zA7Ddfm02Q3ftEQxVtUKe_3-jW2v0vEQGPiE4LhTZk6Og7Cntib9pfyyR-rQRszDIAwmsYkBr4eKhvAl6KQy8J05QENmE1oKaeCKjPowGtlgnLBFyUbUU6TZwaiEG9liRA-1jiwcGv2v4KX4w9G_ttJ1nvLaQW1w297zMv5SmOx7flXxMxD87Q"
 GROUP_ID = 22945290
 
-# Данные ЮКассы
+# ЮKassa
 YKASSA_SHOP_ID = "1004392"
 YKASSA_SECRET_KEY = "live_sWFe6UWGV8GuzaHsPHzKlkdw6rAoKvPVbg3M20QE2lk"
 
-# Данные учеников
-class Student:
-    def __init__(self, code: str, name: str, curator: str, teacher: str, grade: str = "", subject: str = ""):
-        self.code = code.lower()
-        self.name = name
-        self.curator = curator
-        self.teacher = teacher
-        self.grade = grade
-        self.subject = subject
-
-# База данных учеников
-STUDENTS: Dict[str, Student] = {
-    "н1": Student(
-        code="Н1",
-        name="Нелли",
-        curator="Аня",
-        teacher="Толик",
-        grade="",
-        subject=""
-    )
-}
-
-# Общая статистика
+# Ссылки
 STATS_LINK = "https://docs.google.com/spreadsheets/d/1fHP0PLouqRv9A9yVfJsxKYTobGJ3bdJS52rpSqU4V_k/edit?usp=sharing"
 PLATFORM_LINK = "https://didak.ru/lk/teacher/homeworks/"
 
+# Данные ученика
+STUDENT_CODE = "н1"
+STUDENT_NAME = "Нелли"
+STUDENT_CURATOR = "Аня"
+STUDENT_TEACHER = "Толик"
+
+# ===== СОЗДАНИЕ БОТА =====
 bot = Bot(token=TOKEN)
-bp = Blueprint()
 
-WELCOME_MESSAGE = """🌟 Добро пожаловать в школу CHIMBIO!
+# Хранилище кодов пользователей
+user_student_map = {}
 
-Мы рады приветствовать вас в нашей школе химии и биологии! 🧪🔬
-
-📌 Что вы можете сделать:
-• Отправьте ваш персональный код - получите доступ к личному кабинету
-• Напишите "Привет" - увидите это сообщение
-
-В личном кабинете вас ждут:
-📊 Статистика успеваемости
-💳 Оплата занятий
-📚 Ссылка на образовательную платформу
-👨‍🏫 Информация о преподавателе и кураторе"""
-
+# ===== ФУНКЦИИ =====
 async def create_payment_link(amount: float, description: str, user_id: int) -> str:
-    """Создание платежа в ЮKassa и получение ссылки для оплаты"""
+    """Создание платежа в ЮKassa"""
     idempotence_key = str(uuid.uuid4())
     
     payment_data = {
-        "amount": {
-            "value": f"{amount:.2f}",
-            "currency": "RUB"
-        },
-        "confirmation": {
-            "type": "redirect",
-            "return_url": "https://vk.com/im"
-        },
+        "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": "https://vk.com/im"},
         "capture": True,
         "description": description,
-        "metadata": {
-            "user_id": str(user_id),
-            "student_code": "Н1"  # можно динамически определять
-        }
+        "metadata": {"user_id": str(user_id)}
     }
     
     auth = aiohttp.BasicAuth(YKASSA_SHOP_ID, YKASSA_SECRET_KEY)
     
     async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://api.yookassa.ru/v3/payments",
-            json=payment_data,
-            auth=auth,
-            headers={"Idempotence-Key": idempotence_key}
-        ) as response:
-            if response.status == 200:
-                result = await response.json()
-                return result["confirmation"]["confirmation_url"]
-            else:
-                error_text = await response.text()
-                print(f"Ошибка создания платежа: {error_text}")
-                return None
+        try:
+            async with session.post(
+                "https://api.yookassa.ru/v3/payments",
+                json=payment_data,
+                auth=auth,
+                headers={"Idempotence-Key": idempotence_key}
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result["confirmation"]["confirmation_url"]
+                else:
+                    print(f"Ошибка ЮKassa: {response.status}")
+                    return None
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            return None
 
+def get_main_keyboard():
+    """Главная клавиатура"""
+    keyboard = Keyboard(one_time=False, inline=False)
+    keyboard.add(OpenLink(STATS_LINK, "📊 Статистика"), color=KeyboardButtonColor.PRIMARY)
+    keyboard.add(OpenLink(PLATFORM_LINK, "📚 Платформа"), color=KeyboardButtonColor.PRIMARY)
+    keyboard.row()
+    keyboard.add(Text("💳 Оплатить занятия"), color=KeyboardButtonColor.POSITIVE)
+    keyboard.row()
+    keyboard.add(Text("ℹ️ Обо мне"), color=KeyboardButtonColor.SECONDARY)
+    return keyboard
+
+def get_payment_keyboard():
+    """Клавиатура выбора тарифов"""
+    keyboard = Keyboard(one_time=False, inline=False)
+    keyboard.add(Text("8 занятий - 8 464 ₽"), color=KeyboardButtonColor.POSITIVE)
+    keyboard.add(Text("4 занятия - 4 416 ₽"), color=KeyboardButtonColor.POSITIVE)
+    keyboard.row()
+    keyboard.add(Text("1 занятие - 1 150 ₽"), color=KeyboardButtonColor.POSITIVE)
+    keyboard.row()
+    keyboard.add(Text("🔙 Главное меню"), color=KeyboardButtonColor.SECONDARY)
+    return keyboard
+
+# ===== ОБРАБОТЧИКИ СООБЩЕНИЙ =====
 @bot.on.private_message(text="Привет")
 async def greeting(message: Message):
-    await message.answer(WELCOME_MESSAGE)
+    await message.answer(
+        "🌟 Добро пожаловать в школу CHIMBIO!\n\n"
+        "Отправьте ваш персональный код (например: Н1)\n"
+        "чтобы войти в личный кабинет."
+    )
 
-@bot.on.private_message()
-async def handle_code(message: Message):
-    code = message.text.strip().lower()
+@bot.on.private_message(text=STUDENT_CODE)
+async def enter_lk(message: Message):
+    """Вход в личный кабинет по коду"""
+    user_student_map[message.from_id] = STUDENT_CODE
     
-    if code in STUDENTS:
-        student = STUDENTS[code]
-        
-        keyboard = (
-            Keyboard(one_time=False, inline=False)
-            .add(OpenLink(STATS_LINK, "📊 Статистика"), color=KeyboardButtonColor.PRIMARY)
-            .add(OpenLink(PLATFORM_LINK, "📚 Платформа"), color=KeyboardButtonColor.PRIMARY)
-            .row()
-            .add(Text("💳 Оплатить занятия"), color=KeyboardButtonColor.POSITIVE)
-            .row()
-            .add(Text("ℹ️ Обо мне"), color=KeyboardButtonColor.SECONDARY)
-        )
-        
-        student_info = f"""🎓 **Личный кабинет CHIMBIO**
-
-👤 **Ученик:** {student.name}
-👨‍🏫 **Преподаватель:** {student.teacher}
-👩‍💼 **Куратор:** {student.curator}
-
-━━━━━━━━━━━━━━━━━━━
-Выберите действие:"""
-        
-        await message.answer(student_info, keyboard=keyboard)
-    else:
-        await message.answer(
-            "❌ Код не найден.\n\n"
-            "Пожалуйста, проверьте правильность ввода кода или обратитесь к куратору.\n\n"
-            "Напишите 'Привет' для получения общей информации."
-        )
+    await message.answer(
+        f"🎓 **Личный кабинет CHIMBIO**\n\n"
+        f"👤 Ученик: {STUDENT_NAME}\n"
+        f"👨‍🏫 Преподаватель: {STUDENT_TEACHER}\n"
+        f"👩‍💼 Куратор: {STUDENT_CURATOR}\n\n"
+        f"Выберите действие:",
+        keyboard=get_main_keyboard()
+    )
 
 @bot.on.private_message(text="ℹ️ Обо мне")
 async def about_me(message: Message):
+    if message.from_id not in user_student_map:
+        await message.answer("❌ Сначала отправьте ваш код (Н1)")
+        return
+    
     await message.answer(
-        "🔐 Пожалуйста, отправьте ваш персональный код,\n"
-        "чтобы я мог показать информацию о вас."
+        f"📋 **Информация об ученике**\n\n"
+        f"👤 Имя: {STUDENT_NAME}\n"
+        f"👨‍🏫 Преподаватель: {STUDENT_TEACHER}\n"
+        f"👩‍💼 Куратор: {STUDENT_CURATOR}\n"
+        f"🏫 Школа: CHIMBIO\n\n"
+        f"📚 Предметы: Химия, Биология"
     )
 
 @bot.on.private_message(text="💳 Оплатить занятия")
-async def show_payment_options(message: Message):
-    """Показать варианты оплаты"""
-    keyboard = (
-        Keyboard(one_time=False, inline=False)
-        .add(Text("8 занятий - 8 464 ₽"), color=KeyboardButtonColor.POSITIVE)
-        .add(Text("4 занятия - 4 416 ₽"), color=KeyboardButtonColor.POSITIVE)
-        .row()
-        .add(Text("1 занятие - 1 150 ₽"), color=KeyboardButtonColor.POSITIVE)
-        .row()
-        .add(Text("🔙 Назад"), color=KeyboardButtonColor.SECONDARY)
-    )
+async def show_payment(message: Message):
+    if message.from_id not in user_student_map:
+        await message.answer("❌ Сначала отправьте ваш код (Н1)")
+        return
     
     await message.answer(
-        "💳 **Выберите количество занятий:**\n\n"
-        "После нажатия на кнопку вы перейдете на страницу оплаты.",
-        keyboard=keyboard
+        "💳 **Выберите количество занятий:**",
+        keyboard=get_payment_keyboard()
     )
 
 @bot.on.private_message(text=["8 занятий - 8 464 ₽", "4 занятия - 4 416 ₽", "1 занятие - 1 150 ₽"])
 async def process_payment(message: Message):
-    """Обработка выбора тарифа и создание платежа"""
+    if message.from_id not in user_student_map:
+        await message.answer("❌ Сначала отправьте ваш код (Н1)")
+        return
+    
     text = message.text
-    
-    # Определяем сумму и описание
     if "8 занятий" in text:
-        amount = 8464
-        lessons = 8
+        amount, lessons = 8464, 8
     elif "4 занятия" in text:
-        amount = 4416
-        lessons = 4
+        amount, lessons = 4416, 4
     else:
-        amount = 1150
-        lessons = 1
+        amount, lessons = 1150, 1
     
-    description = f"Оплата {lessons} занятий в школе CHIMBIO"
+    await message.answer("⏳ Создаю платеж...")
     
-    # Отправляем уведомление о создании платежа
-    await message.answer("⏳ Создаю платеж, пожалуйста, подождите...")
-    
-    # Создаем платеж и получаем ссылку
-    payment_url = await create_payment_link(amount, description, message.from_id)
+    payment_url = await create_payment_link(amount, f"Оплата {lessons} занятий CHIMBIO", message.from_id)
     
     if payment_url:
-        # Создаем клавиатуру со ссылкой на оплату
-        keyboard = (
-            Keyboard(one_time=False, inline=False)
-            .add(OpenLink(payment_url, "💳 Перейти к оплате"), color=KeyboardButtonColor.POSITIVE)
-            .row()
-            .add(Text("🔙 Назад к тарифам"), color=KeyboardButtonColor.SECONDARY)
-        )
+        keyboard = Keyboard(one_time=False, inline=False)
+        keyboard.add(OpenLink(payment_url, "💳 Оплатить"), color=KeyboardButtonColor.POSITIVE)
+        keyboard.row()
+        keyboard.add(Text("🔙 Главное меню"), color=KeyboardButtonColor.SECONDARY)
         
         await message.answer(
             f"✅ **Платеж создан!**\n\n"
-            f"📦 Тариф: {lessons} занятий\n"
-            f"💰 Сумма: {amount} ₽\n\n"
-            f"Нажмите на кнопку ниже, чтобы перейти к оплате.\n"
-            f"После оплаты занятия будут автоматически зачислены.",
+            f"Тариф: {lessons} занятий\n"
+            f"Сумма: {amount} ₽\n\n"
+            f"Нажмите кнопку для оплаты:",
             keyboard=keyboard
         )
     else:
-        await message.answer(
-            "❌ Не удалось создать платеж.\n"
-            "Пожалуйста, попробуйте позже или обратитесь к куратору."
-        )
+        await message.answer("❌ Ошибка создания платежа. Попробуйте позже.")
 
-@bot.on.private_message(text="🔙 Назад к тарифам")
-async def back_to_tariffs(message: Message):
-    """Возврат к выбору тарифов"""
-    await show_payment_options(message)
-
-@bot.on.private_message(text="🔙 Назад")
-async def back_to_main(message: Message):
-    """Возврат к личному кабинету"""
+@bot.on.private_message(text="🔙 Главное меню")
+async def back_to_menu(message: Message):
+    if message.from_id not in user_student_map:
+        await message.answer("❌ Сначала отправьте ваш код (Н1)")
+        return
+    
     await message.answer(
-        "Вернитесь в личный кабинет, отправив ваш персональный код.\n\n"
-        "Или напишите 'Привет' для общей информации."
+        f"🎓 **Главное меню**\n\n"
+        f"👤 Ученик: {STUDENT_NAME}",
+        keyboard=get_main_keyboard()
     )
 
-# Функция для добавления нового ученика
-def add_student(code: str, name: str, curator: str, teacher: str, grade: str = "", subject: str = ""):
-    student = Student(code, name, curator, teacher, grade, subject)
-    STUDENTS[code.lower()] = student
-    print(f"✅ Добавлен ученик: {name} (код: {code})")
+# Обработка любых других сообщений
+@bot.on.private_message()
+async def unknown_message(message: Message):
+    if message.from_id not in user_student_map:
+        await message.answer(
+            "❌ Неизвестная команда.\n\n"
+            "Отправьте ваш код (Н1) для входа в личный кабинет\n"
+            "или напишите 'Привет' для приветствия."
+        )
+    else:
+        await message.answer(
+            "❌ Неизвестная команда.\n\n"
+            "Используйте кнопки меню для навигации."
+        )
 
-# Запуск бота
+# ===== ЗАПУСК =====
 async def main():
     print("🚀 Бот CHIMBIO запущен!")
-    print(f"📊 Всего учеников в базе: {len(STUDENTS)}")
-    print("👥 Список учеников:")
-    for student in STUDENTS.values():
-        print(f"   - {student.name} (код: {student.code})")
-    print("\n✨ Бот готов к работе!")
+    print(f"✅ Токен загружен")
+    print(f"📊 Группа ID: {GROUP_ID}")
+    print(f"👤 Ученик: {STUDENT_NAME} (код: {STUDENT_CODE})")
+    print("✨ Бот готов к работе! Ожидаю сообщения...")
     
     await bot.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
