@@ -6,7 +6,7 @@ from vkbottle.bot import Message
 from vkbottle import Keyboard, KeyboardButtonColor, Text, OpenLink
 
 # ===== НАСТРОЙКИ =====
-TOKEN = "vk1.a.IKjZjBmZ81PbetOXdFOCkPCT2C9lAtZ6zA7Ddfm02Q3ftEQxVtUKe_3-jW2v0vEQGPiE4LhTZk6Og7Cntib9pfyyR-rQRszDIAwmsYkBr4eKhvAl6KQy8J05QENmE1oKaeCKjPowGtlgnLBFyUbUU6TZwaiEG9liRA-1jiwcGv2v4KX4w9G_ttJ1nvLaQW1w297zMv5SmOx7flXxMxD87Q"
+TOKEN = "vk1.a.qrOdk4rDPKTWa0Sc9LAk4MHycxH-0TYCpfbsyLb7wKF3qK9yygsryEJnGitpF7E8c6t-qCl2YjxrnoTcGUusQGMtwTVpRNegWWF96jebj6lRAxbgfbRNdv9msxmEPcv2boC01xjB8I8pQznqNayPCrMktLaQi9_cCKR9Ibs9tMoUMuNCElv33ss_RngMIGJRZifIuXhpB74ngDKMcs-Ygg"
 GROUP_ID = 22945290
 
 # ЮKassa
